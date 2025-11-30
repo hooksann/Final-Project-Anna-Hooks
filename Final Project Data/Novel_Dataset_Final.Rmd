@@ -1,0 +1,379 @@
+---
+title: "R_Final_Project_Commented"
+author: "Anna Hooks"
+date: "2025-11-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#Loading in the og packages
+library(dplyr) 
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+
+```
+
+
+```{r}
+
+base_dir <- "C:/Users/daisy/OneDrive - Michigan State University/Final Project Data"
+
+wave_dirs   <- c("Wave 1 Abbreviated", "Wave 2 Abbreviated", "Wave 3 Abbreviated") #Different panel wave file titles
+wave_labels <- c("wave1", "wave2", "wave3") #setting what the different panels of my survey will be categorized by
+
+files_by_wave <- set_names(
+  map(file.path(base_dir, wave_dirs), ~ list.files(.x, pattern = "\\.csv$", full.names = TRUE)),
+  wave_labels
+) #retrieves all csv files from my directory
+
+
+```
+
+ 
+```{r}
+#This code is taking a bunch of survey CSV files from one wave and turning them into one clean, merged dataset. The first function, read_section_clean(), reads a single file, checks that it has a household ID column (hhid), drops any rows where that ID is missing, makes sure the ID columns (hhid and indiv if it exists) are stored as text, and then returns containing the cleaned data, whether it’s a person-level file (it has indiv) or just household-level, and the file name.
+read_section_clean <- function(file) {
+  dt <- read_csv(file, show_col_types = FALSE) %>% as_tibble()
+  if (!"hhid" %in% names(dt)) return(NULL)
+
+  dt <- dt %>% filter(!is.na(hhid))
+
+  # Convert existing ID columns to character
+  id_cols <- intersect(c("hhid", "indiv"), names(dt))
+  dt <- dt %>% mutate(across(all_of(id_cols), as.character))
+
+  list(data = dt, is_person = "indiv" %in% names(dt), file = file)
+}
+```
+
+```{r}
+#The second function, merge_wave(), runs that cleaning on all the files for a given wave, throws out any that didn’t have hhid, and splits what’s left into person-level sections and household-level sections. It then looks for the roster  file through files that have sect, uses that as the base, and step-by-step left-joins all the other  files onto it by hhid and indiv, and then all the household files by hhid, making sure not to duplicate columns. At the end, it adds a wave column so you know which wave these rows came from and returns the fully merged dataset for that wave.
+merge_wave <- function(files, wave_label) 
+  {  
+  sections <- map(files, read_section_clean) %>% compact() 
+  if (length(sections) == 0) return(NULL)
+
+  person_secs <- keep(sections, ~ .x$is_person) #keeps individually reported vars
+  hh_secs     <- keep(sections, ~ !.x$is_person) #keeps household reported vars
+
+  
+  roster <- if (length(person_secs) > 0) { 
+    roster_idx <- which(map_chr(person_secs, ~ basename(.x$file)) %>% str_detect(regex("sect", ignore_case = TRUE))) 
+    if (length(roster_idx) == 0) stop("No roster/sect1 file for wave ", wave_label)
+    roster_data <- person_secs[[roster_idx]]$data
+    person_secs <- person_secs[-roster_idx]  # exclude roster
+    roster_data
+  } else {
+    tibble(hhid = character())
+  }
+
+  merge_sections <- function(base, secs, keys) {
+    reduce(secs, function(base, sec) {
+      dt <- sec$data %>%
+        group_by(across(all_of(keys))) %>%
+        summarise(across(everything(), ~ first(.x)), .groups = "drop") %>%
+        select(-any_of(intersect(names(.), names(base)) %>% setdiff(keys)))
+      left_join(base, dt, by = keys)
+    }, .init = base)
+  }
+
+  person_merged <- merge_sections(roster, person_secs, c("hhid", "indiv"))
+  person_merged <- merge_sections(person_merged, hh_secs, "hhid")
+
+  mutate(person_merged, wave = wave_label)
+}
+
+```
+
+
+```{r}
+
+wave_data_list <- map2(files_by_wave, wave_labels, merge_wave) %>% compact() #There are multiple files in each wave, so its easier to use a data list before merging. This makes the data list as the three waves, with each wave containing the files we want. 
+
+panel_long <- bind_rows(map(wave_data_list, ~ mutate(.x, across(everything(), as.character)))) #makes everything a character so that we can merge easily without different variable types
+
+panel_long %>% count(wave) #making sure my waves have normal population counts after the merge. I was having issues with a "cartesian explosion", where the waves were doubling and tripling. This code stopped that, but its still a good check to have. 
+```
+
+
+
+
+
+
+
+```{r}
+panel_long <- panel_long %>%
+  mutate(
+    report_year = case_when(
+      # Wave 1
+      wave == "wave1" & s15aq3a == 1 ~ 2007,
+      wave == "wave1" & s15aq3b == 1 ~ 2008,
+      wave == "wave1" & s15aq3c == 1 ~ 2009,
+      wave == "wave1" & s15aq3d == 1 ~ 2010,
+      wave == "wave1" & s15aq3e == 1 ~ 2011,
+      
+      # Wave 2
+      wave == "wave2" & s15aq3a == 1 ~ 2009,
+      wave == "wave2" & s15aq3b == 1 ~ 2010,
+      wave == "wave2" & s15aq3c == 1 ~ 2011,
+      wave == "wave2" & s15aq3d == 1 ~ 2012,
+      wave == "wave2" & s15aq3e == 1 ~ 2013,
+      
+      # Wave 3
+      wave == "wave3" & s15aq3a == "X" ~ 2014,
+      wave == "wave3" & s15aq3b == "X" ~ 2015,
+      wave == "wave3" & s15aq3c == "X" ~ 2016,
+      TRUE ~ NA_real_  # For any rows where no column is 1
+    )
+  ) #using the survey documentation to set reported shocks to a year value rather than a dummy. Question 15a effectively asks respondents to "cross off" what year they experienced the reported shock.
+
+summary(panel_long$report_year) #checking if this matched the codebook (it does)
+```
+
+```{r}
+panel_long_report <- panel_long %>%
+mutate(
+      report_year = case_when(
+      wave == "wave1" & is.na(report_year) ~ 2010,
+      wave == "wave2" & is.na(report_year) ~ 2013,
+      wave == "wave3" & is.na(report_year) ~ 2016,
+      TRUE ~ report_year)
+) #so we don't have a bunch of nas that drop during analysis, this fills the report year variable with the survey year when a household doesn't report a shock.
+
+panel_long_report$report_year
+```
+
+```{r}
+panel_long_dummy <- panel_long_report %>%
+  mutate(
+    shock_yes_no = case_when(
+      is.na(shock_cd) ~ 0,       
+      is.character(shock_cd) ~ 1,   
+      TRUE ~ NA_real_                    
+    )
+  ) #makes a dummy variable to capture if there is a shock reported or not. 
+
+panel_long_dummy$shock_yes_no
+```
+
+
+
+
+```{r}
+
+panel_sf <- panel_long_dummy %>%
+  mutate(
+    lat_dd = coalesce(lat_dd_mod, LAT_DD_MOD),
+    lon_dd = coalesce(lon_dd_mod, LON_DD_MOD)
+  ) %>%
+  filter(!is.na(lat_dd), !is.na(lon_dd)) %>%
+  mutate(
+    lat_dd = as.numeric(lat_dd),
+    lon_dd = as.numeric(lon_dd)
+  ) #Some files have lat and lon labelled differently. Coalesce looks for BOTH potential options (lowercase first, then uppercase). This also filters out nas and sets them back to numeric.
+names(panel_sf) 
+
+
+```
+
+```{r}
+
+panel_sf <- panel_sf %>%
+  mutate(lat_dd_bh = lat_dd,
+         lon_dd_bh = lon_dd) #Makes a lat lon var for our conflict data later
+names(panel_sf) 
+```
+
+
+
+##NOAA Data
+```{r}
+
+noaa_yearly <- read_csv("C:/Users/daisy/OneDrive - Michigan State University/Final Project Data/NOAA Final Data.csv")
+
+```
+
+```{r}
+noaa_yearly <- noaa_yearly %>%
+  mutate(
+    DATE = as.Date(DATE, format = "%m/%d/%Y"),
+    yearmonth = floor_date(DATE, "month"),
+    year = year(DATE)
+  ) %>%
+  group_by(STATION, yearmonth) %>%
+  mutate(
+    monthly_avg_TAVG = mean(TAVG, na.rm = TRUE),
+    monthly_total_PRCP = sum(PRCP, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  group_by(STATION, year) %>%
+  mutate(
+    yearly_avg_TAVG = mean(TAVG, na.rm = TRUE),
+    yearly_total_PRCP = sum(PRCP, na.rm = TRUE)
+  ) %>%
+  ungroup() #Making yearly and monthly averages for precipitation and temperature
+```
+
+
+```{r}
+noaa_yearly_coord <- st_as_sf(
+  noaa_yearly,
+  coords = c("LONGITUDE", "LATITUDE"),
+  crs = 4326 
+) #makes my noaa yearly into an sf object, which allows me to convert the lat lon into actual coordinates instead of numeric.
+
+panel_sf_coord <- st_as_sf(
+  panel_sf,
+  coords = c("lon_dd", "lat_dd"),
+  crs = 4326
+) #does the same thing, but for my panel data. This allows for a spatial merge
+```
+
+
+
+```{r}
+nearest_idx <- st_nearest_feature(panel_sf_coord, noaa_yearly_coord) #this finds the coordinated pairs that are nearest to each other in eac dataset using the st function. 
+
+```
+
+```{r}
+stations_sf <- noaa_yearly_coord %>% 
+  distinct(STATION, .keep_all = TRUE) #This is set up to find nearest STATION, by attaching distinct stations observation by observation.
+```
+
+
+```{r}
+nearest_station_idx <- st_nearest_feature(panel_sf_coord, stations_sf) #This now finds nearest household to unique station. 
+
+```
+
+```{r}
+panel_with_station <- panel_sf_coord %>%
+  mutate(
+    nearest_station = stations_sf$STATION[nearest_station_idx]
+  ) #This now joins the unique weather station for each observation to the household panel data. 
+```
+
+
+
+```{r}
+panel_with_station <- panel_with_station %>%
+  rename(year = report_year)  # renaming to make merging easier
+```
+
+
+```{r}
+noaa_unique <- noaa_yearly_coord %>%
+  st_drop_geometry() %>%        # drops geometry first to keep merge easier
+  distinct(STATION, year, .keep_all = TRUE)  # keep only one row per station/year, so when we merge its by station and year, spatial and time, rather than just spatial.
+```
+
+
+```{r}
+panel_with_noaa <- panel_with_station %>%
+  left_join(
+    noaa_unique,
+    by = c("nearest_station" = "STATION",
+           "year" = "year")
+  )
+
+colnames(panel_with_noaa) #The first merge!! by station and year
+```
+
+
+```{r}
+#If you want monthly averages for looking at conflict and weather, don't run this. Household shocks are just not reported on that specific of a level, so I drop them here. 
+panel_with_noaa_final <- panel_with_noaa %>%
+  select(-monthly_total_PRCP,
+         -monthly_avg_TAVG)
+
+
+colnames(panel_with_noaa_final)
+```
+
+###Conflict 
+```{r}
+
+BH_raw <- read_csv("C:/Users/daisy/OneDrive - Michigan State University/Final Project Data/Conflict Final Data.csv")
+```
+
+```{r}
+BH_raw <- BH_raw %>% select(-assoc_actor_1, -iso, -country) #Removing columns that are repetitive or not well reported
+
+BH_raw <- unique(BH_raw) #Removing EXACT duplicates (more on that later)
+```
+
+```{r}
+
+BH_raw <- BH_raw %>% mutate(across(civilian_targeting, ~ replace(., is.na(.), 0)))
+BH_raw <- BH_raw %>%
+  mutate(,civilian_targeting = ifelse(BH_raw$civilian_targeting == 'Civilian targeting', 1, 0))#1 means civilians were targeted, 0 means no
+
+BH_raw <- BH_raw %>% mutate(Chibok_post = ifelse(BH_raw$year >= 2014, 1, 0))#1 means it happened 2014 or later (post kidnapping), 0 means it happened before. 
+
+word_search <- c("girls", "girl", "women", "woman", "female", "females") #makes list of search terms
+combined_list <- paste(word_search, collapse = "|")
+BH_raw <- BH_raw %>% 
+  mutate(women_involved = if_else(grepl('girls|girl|women|woman|female|females', notes),1,0)) #makes a dummy!!
+BH_women <- BH_raw %>% filter(.,women_involved == 1) #makes a subset of women-only events, I was curious
+
+
+```
+
+```{r}
+
+BH_raw <- BH_raw %>% 
+  group_by(notes) %>%          
+  arrange(desc(timestamp)) %>% 
+  slice(1) %>%                 
+  ungroup() #So some events are updated as more accurate reporting comes out, the most accurate report of an event would have the most recent timestamp. This keeps only the most accurate report. 
+
+```
+
+
+#The Big Mergeee
+```{r}
+library(dplyr)
+library(sf)
+
+# Ensure both are sf
+panel_sf <- panel_with_noaa_final %>%
+  st_as_sf(coords = c("lon_dd_bh", "lat_dd_bh"), crs = 4326)
+
+BH_sf <- BH_raw %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+BH_by_year <- split(BH_sf, BH_sf$year) # Split BH by year, this makes sure we merge all events across all years with their best lat lon match within that year
+
+panel_list <- vector("list", length = length(BH_by_year))
+
+for (yr in names(BH_by_year)) {
+  bh_sub <- BH_by_year[[yr]]
+  panel_sub <- panel_sf %>% filter(year == as.integer(yr))
+  
+  if (nrow(panel_sub) == 0) next
+  if (nrow(bh_sub) == 0) {
+    panel_sub$nearest_event <- NA
+    panel_list[[yr]] <- panel_sub
+    next
+  } #Subsets both datasets by year so we can combine within a year for best spacial match
+  
+  idx <- st_nearest_feature(panel_sub, bh_sub) #finds nearest lat lon from previously joined data with our conflict.
+  
+  
+  panel_sub <- panel_sub %>%
+    bind_cols(bh_sub[idx, ] %>% st_drop_geometry() %>% select(-year)) #we do best spatial match here within the year
+  
+  panel_list[[yr]] <- panel_sub #putting things in a list made them easier to merge later
+} 
+
+
+panel_with_bh <- bind_rows(panel_list) # Combine all yearly panel subsets (with BH data attached) back into one big data frame. Now we have our novel dataset!
+
+```

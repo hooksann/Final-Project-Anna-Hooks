@@ -19,10 +19,13 @@ library(tibble)
 
 ```
 
+```{r}
+getwd()
+```
 
 ```{r}
 
-base_dir <- "C:/Users/daisy/OneDrive - Michigan State University/Final Project Data"
+base_dir <- "../Final-Project-Anna-Hooks/Final Project Data"
 
 wave_dirs   <- c("Wave 1 Abbreviated", "Wave 2 Abbreviated", "Wave 3 Abbreviated") #Different panel wave file titles
 wave_labels <- c("wave1", "wave2", "wave3") #setting what the different panels of my survey will be categorized by
@@ -195,7 +198,8 @@ names(panel_sf)
 ##NOAA Data
 ```{r}
 
-noaa_yearly <- read_csv("C:/Users/daisy/OneDrive - Michigan State University/Final Project Data/NOAA Final Data.csv")
+noaa_yearly <- read_csv("../Final-Project-Anna-Hooks/Final Project Data/NOAA Final Data.csv")
+
 
 ```
 
@@ -300,7 +304,7 @@ colnames(panel_with_noaa_final)
 ###Conflict 
 ```{r}
 
-BH_raw <- read_csv("C:/Users/daisy/OneDrive - Michigan State University/Final Project Data/Conflict Final Data.csv")
+BH_raw <- read_csv("../Final-Project-Anna-Hooks/Final Project Data/Conflict Final Data.csv")
 ```
 
 ```{r}
